@@ -7,10 +7,12 @@
 # Used for BOTH input (prompt) and output (response) screening.
 
 import os
+from urllib.parse import urlparse
+
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 CONTENT_SAFETY_ENDPOINT = os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT")
 CONTENT_SAFETY_KEY      = os.getenv("AZURE_CONTENT_SAFETY_KEY")
@@ -20,6 +22,17 @@ CONTENT_SAFETY_TIMEOUT  = 5   # seconds — never let this block the pipeline
 # Severity threshold — 0=safe, 2=low, 4=medium, 6=high
 # Block anything medium or above
 BLOCK_SEVERITY = 4
+
+
+def _normalize_content_safety_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.strip().rstrip("/")
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(
+            "AZURE_CONTENT_SAFETY_ENDPOINT must be a full HTTPS endpoint like "
+            "https://<resource>.cognitiveservices.azure.com"
+        )
+    return endpoint
 
 
 async def check_content_safety(text: str) -> bool:
@@ -38,7 +51,13 @@ async def check_content_safety(text: str) -> bool:
         print("[Content Safety] Credentials not set — skipping check.")
         return True
 
-    url = f"{CONTENT_SAFETY_ENDPOINT}/contentsafety/text:analyze?api-version=2023-10-01"
+    try:
+        endpoint = _normalize_content_safety_endpoint(CONTENT_SAFETY_ENDPOINT)
+    except ValueError as exc:
+        print(f"[Content Safety] Invalid endpoint - failing open: {exc}")
+        return True
+
+    url = f"{endpoint}/contentsafety/text:analyze?api-version=2023-10-01"
 
     payload = {
         "text": text[:1000],  # API limit
@@ -52,7 +71,7 @@ async def check_content_safety(text: str) -> bool:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=CONTENT_SAFETY_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=CONTENT_SAFETY_TIMEOUT, trust_env=False) as client:
             response = await client.post(url, json=payload, headers=headers)
 
         if response.status_code != 200:
